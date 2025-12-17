@@ -173,38 +173,34 @@ export const acceptInvitation = async (req, res) => {
       board: { _id: board._id, name: board.title, description: board.description }
     })
 
-    // Notify sender
-    const acceptMessage = new Message({
-      recipient: invitation.sender._id,
-      sender: userId,
-      board: board._id,
-      type: "request_accepted",
-      content: `Your invitation to join "${board.title}" was accepted`,
-      metadata: {
-        boardName: board.title,
-        action: "accepted",
-      },
-    })
-
-    await acceptMessage.save()
-
-    // Notify sender about new message
-    io.to(`user-${invitation.sender._id}`).emit("message:received", {
-      message: acceptMessage
-    })
-
-    // Update original invitation message status
-    await Message.updateOne(
+    // Update original invitation message status (DO NOT CREATE NEW MESSAGE)
+    const updatedMessage = await Message.findOneAndUpdate(
       { 'metadata.invitationId': invitationId },
-      { $set: { status: 'accepted' } }
-    )
+      { 
+        $set: { 
+          status: 'accepted',
+          'metadata.respondedAt': new Date(),
+          'metadata.respondedBy': userId
+        } 
+      },
+      { new: true }
+    ).populate('sender', 'name email')
 
-    // Emit socket event for message update
+    // Emit socket event for message update to recipient (who accepted)
     io.to(`user-${userId}`).emit("message:updated", {
       messageId: invitationId,
       status: 'accepted',
       type: 'invitation'
     })
+
+    // Notify sender that invitation was accepted
+    if (updatedMessage) {
+      io.to(`user-${invitation.sender._id}`).emit("message:updated", {
+        messageId: invitationId,
+        status: 'accepted',
+        type: 'invitation'
+      })
+    }
 
     // Send email notification
     const acceptedBy = await User.findById(userId)
@@ -244,33 +240,34 @@ export const rejectInvitation = async (req, res) => {
     invitation.status = "rejected"
     await invitation.save()
 
-    // Notify sender
-    const rejectMessage = new Message({
-      recipient: invitation.sender._id,
-      sender: userId,
-      board: invitation.board._id,
-      type: "request_rejected",
-      content: `Your invitation to join "${invitation.board.title}" was rejected`,
-      metadata: {
-        boardName: invitation.board.title,
-        action: "rejected",
-      },
-    })
-
-    await rejectMessage.save()
-
-    // Update original invitation message status
-    await Message.updateOne(
+    // Update original invitation message status (DO NOT CREATE NEW MESSAGE)
+    const updatedMessage = await Message.findOneAndUpdate(
       { 'metadata.invitationId': invitationId },
-      { $set: { status: 'rejected' } }
+      { 
+        $set: { 
+          status: 'rejected',
+          'metadata.respondedAt': new Date(),
+          'metadata.respondedBy': userId
+        } 
+      },
+      { new: true }
     )
 
-    // Emit socket event for message update
+    // Emit socket event for message update to recipient (who rejected)
     io.to(`user-${userId}`).emit("message:updated", {
       messageId: invitationId,
       status: 'rejected',
       type: 'invitation'
     })
+
+    // Notify sender that invitation was rejected
+    if (updatedMessage) {
+      io.to(`user-${invitation.sender._id}`).emit("message:updated", {
+        messageId: invitationId,
+        status: 'rejected',
+        type: 'invitation'
+      })
+    }
 
     // Send email notification
     const rejectedBy = await User.findById(userId)

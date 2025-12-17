@@ -159,37 +159,37 @@ export const acceptJoinRequest = async (req, res) => {
       board: { _id: board._id, name: board.title, description: board.description }
     })
 
-    // Notify requester
-    const acceptMessage = new Message({
-      recipient: joinRequest.requester._id,
-      sender: userId,
-      board: board._id,
-      type: "request_accepted",
-      content: `Your request to join "${board.title}" was accepted`,
-      metadata: {
-        boardName: board.title,
-        action: "accepted",
-      },
-    })
-
-    await acceptMessage.save()
-
-    // Notify requester about new message
-    io.to(`user-${joinRequest.requester._id}`).emit("message:received", {
-      message: acceptMessage
-    })
-
-    // Update original join request message status
+    // Update original join request message status (DO NOT CREATE NEW MESSAGE)
     await Message.updateOne(
       { 'metadata.joinRequestId': requestId },
-      { $set: { status: 'accepted' } }
+      { 
+        $set: { 
+          status: 'accepted',
+          'metadata.respondedAt': new Date(),
+          'metadata.respondedBy': userId
+        } 
+      }
     )
 
-    // Emit socket event for message update
+    // Emit socket event for message update to board owner (who accepted)
     io.to(`user-${userId}`).emit("message:updated", {
       messageId: requestId,
       status: 'accepted',
       type: 'join_request'
+    })
+
+    // Notify requester that join request was accepted
+    io.to(`user-${joinRequest.requester._id}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'accepted',
+      type: 'join_request'
+    })
+
+    // Emit request:updated event to board participants
+    io.to(`board-${board._id}`).emit("request:updated", {
+      requestId,
+      type: 'join_request',
+      status: 'accepted'
     })
 
     // Send email notification
@@ -235,33 +235,38 @@ export const rejectJoinRequest = async (req, res) => {
     joinRequest.rejectionReason = reason || ""
     await joinRequest.save()
 
-    // Notify requester
-    const rejectMessage = new Message({
-      recipient: joinRequest.requester._id,
-      sender: userId,
-      board: board._id,
-      type: "request_rejected",
-      content: `Your request to join "${board.title}" was rejected${reason ? `: ${reason}` : ""}`,
-      metadata: {
-        boardName: board.title,
-        action: "rejected",
-        reason: reason || "",
-      },
-    })
-
-    await rejectMessage.save()
-
-    // Update original join request message status
+    // Update original join request message status (DO NOT CREATE NEW MESSAGE)
     await Message.updateOne(
       { 'metadata.joinRequestId': requestId },
-      { $set: { status: 'rejected' } }
+      { 
+        $set: { 
+          status: 'rejected',
+          'metadata.respondedAt': new Date(),
+          'metadata.respondedBy': userId,
+          'metadata.reason': reason || ''
+        } 
+      }
     )
 
-    // Emit socket event for message update
+    // Emit socket event for message update to board owner (who rejected)
     io.to(`user-${userId}`).emit("message:updated", {
       messageId: requestId,
       status: 'rejected',
       type: 'join_request'
+    })
+
+    // Notify requester that join request was rejected
+    io.to(`user-${joinRequest.requester._id}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'rejected',
+      type: 'join_request'
+    })
+
+    // Emit request:updated event to board participants
+    io.to(`board-${board._id}`).emit("request:updated", {
+      requestId,
+      type: 'join_request',
+      status: 'rejected'
     })
 
     // Send email notification

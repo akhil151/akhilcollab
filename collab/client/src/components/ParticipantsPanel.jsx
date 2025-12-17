@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import { X, UserPlus, Users, Mail, Check, XCircle, Trash2, Shield, User as UserIcon, Crown } from "lucide-react"
+import { X, UserPlus, Users, Mail, Check, XCircle, Trash2, Shield, User as UserIcon, Crown, UserCheck } from "lucide-react"
 import axios from "axios"
 import { useUserStore } from "../store/userStore"
 import { connectSocket, onEvent, emitEvent } from "../utils/socket"
@@ -9,6 +9,7 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
   const [activeTab, setActiveTab] = useState("participants")
   const [participants, setParticipants] = useState([])
   const [joinRequests, setJoinRequests] = useState([])
+  const [collaborationRequests, setCollaborationRequests] = useState([])
   const [loading, setLoading] = useState(false)
   
   // Invitation form
@@ -23,9 +24,6 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
     if (isOpen && boardId) {
       fetchBoard()
       fetchParticipants()
-      if (isAdmin) {
-        fetchJoinRequests()
-      }
       
       // Connect to socket for real-time updates
       try {
@@ -39,6 +37,8 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
           if (data) {
             console.log("Participant added:", data)
             fetchParticipants()
+            fetchJoinRequests()
+            fetchCollaborationRequests()
           }
         })
         
@@ -49,11 +49,29 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
             fetchParticipants()
           }
         })
+
+        // Listen for request updates
+        onEvent("request:updated", (data) => {
+          if (data) {
+            console.log("Request updated:", data)
+            fetchJoinRequests()
+            fetchCollaborationRequests()
+            fetchParticipants()
+          }
+        })
       } catch (error) {
         console.error("Socket connection error:", error)
       }
     }
   }, [isOpen, boardId])
+
+  // Separate effect to fetch requests when board is loaded and user is admin
+  useEffect(() => {
+    if (isOpen && boardId && board && isAdmin) {
+      fetchJoinRequests()
+      fetchCollaborationRequests()
+    }
+  }, [isOpen, boardId, board])
 
   const fetchBoard = async () => {
     try {
@@ -117,17 +135,38 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
       
       if (response.data && Array.isArray(response.data)) {
         setJoinRequests(response.data.filter(req => req && req._id))
-      } else {user && (
-    (typeof board.owner === 'string' && board.owner === user.id) ||
-    (board.owner._id && board.owner._id === user.id) ||
-    (board.owner.id && board.owner.id === user.id)
-  )
+      } else {
         console.error("Invalid join requests data")
         setJoinRequests([])
       }
     } catch (error) {
       console.error("Failed to fetch join requests:", error)
       setJoinRequests([])
+    }
+  }
+
+  const fetchCollaborationRequests = async () => {
+    try {
+      const token = localStorage.getItem("token")
+      if (!token) {
+        console.error("No token found")
+        return
+      }
+
+      const response = await axios.get(
+        `${import.meta.env.VITE_API_URL}/api/collaboration-requests/board/${boardId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      
+      if (response.data && Array.isArray(response.data)) {
+        setCollaborationRequests(response.data.filter(req => req && req._id))
+      } else {
+        console.error("Invalid collaboration requests data")
+        setCollaborationRequests([])
+      }
+    } catch (error) {
+      console.error("Failed to fetch collaboration requests:", error)
+      setCollaborationRequests([])
     }
   }
 
@@ -202,6 +241,43 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
       fetchJoinRequests()
     } catch (error) {
       console.error("Failed to reject request:", error)
+      alert(error.response?.data?.message || "Failed to reject request")
+    }
+  }
+
+  const acceptCollaborationRequest = async (requestId) => {
+    try {
+      const token = localStorage.getItem("token")
+      await axios.put(
+        `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/accept`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      
+      alert("Collaboration request accepted!")
+      fetchCollaborationRequests()
+      fetchParticipants()
+    } catch (error) {
+      console.error("Failed to accept collaboration request:", error)
+      alert(error.response?.data?.message || "Failed to accept request")
+    }
+  }
+
+  const rejectCollaborationRequest = async (requestId) => {
+    const reason = prompt("Reason for rejection (optional):")
+    
+    try {
+      const token = localStorage.getItem("token")
+      await axios.put(
+        `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/reject`,
+        { reason },
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      
+      alert("Collaboration request rejected")
+      fetchCollaborationRequests()
+    } catch (error) {
+      console.error("Failed to reject collaboration request:", error)
       alert(error.response?.data?.message || "Failed to reject request")
     }
   }
@@ -319,9 +395,9 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
                 <div className="flex items-center justify-center gap-2">
                   <Mail className="w-5 h-5" />
                   Requests
-                  {joinRequests.length > 0 && (
+                  {(joinRequests.length + collaborationRequests.length) > 0 && (
                     <span className="absolute top-2 right-2 w-5 h-5 bg-red-500 text-white text-xs font-bold rounded-full flex items-center justify-center">
-                      {joinRequests.length}
+                      {joinRequests.length + collaborationRequests.length}
                     </span>
                   )}
                 </div>
@@ -463,64 +539,136 @@ export default function ParticipantsPanel({ isOpen, onClose, boardId }) {
             </div>
           )}
 
-          {/* Join Requests Tab */}
+          {/* Requests Tab (Join + Collaboration) */}
           {activeTab === "requests" && isAdmin && (
             <div>
               <p className="text-gray-600 mb-6">
-                Review and manage join requests for this board
+                Review and manage join requests and collaboration requests for this board
               </p>
 
-              {joinRequests.length === 0 ? (
+              {joinRequests.length === 0 && collaborationRequests.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
                   <Mail className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                  <p>No pending join requests</p>
+                  <p>No pending requests</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {joinRequests.map((request) => (
-                    <div
-                      key={request._id}
-                      className="p-4 bg-gray-50 rounded-xl border border-gray-200"
-                    >
-                      <div className="flex items-start justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-full flex items-center justify-center text-white font-bold">
-                            {request.requester?.name?.[0] || "?"}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-gray-900">{request.requester?.name}</p>
-                            <p className="text-sm text-gray-600">{request.requester?.email}</p>
-                          </div>
-                        </div>
-                        <span className="text-xs text-gray-500">
-                          {new Date(request.createdAt).toLocaleDateString()}
-                        </span>
-                      </div>
+                <div className="space-y-6">
+                  {/* Collaboration Requests Section */}
+                  {collaborationRequests.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                        <UserCheck className="w-5 h-5 text-purple-600" />
+                        Collaboration Requests ({collaborationRequests.length})
+                      </h3>
+                      <div className="space-y-3">
+                        {collaborationRequests.map((request) => (
+                          <div
+                            key={request._id}
+                            className="p-4 bg-purple-50 rounded-xl border border-purple-200"
+                          >
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-white font-bold">
+                                  {request.requester?.name?.[0] || "?"}
+                                </div>
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-semibold text-gray-900">{request.requester?.name}</p>
+                                    {request.requester?.role === "ADMIN" && (
+                                      <span className="px-2 py-0.5 bg-purple-600 text-white text-xs font-bold rounded">ADMIN</span>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-gray-600">{request.requester?.email}</p>
+                                </div>
+                              </div>
+                              <span className="text-xs text-gray-500">
+                                {new Date(request.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
 
-                      {request.message && (
-                        <p className="text-sm text-gray-700 mb-4 p-3 bg-white rounded-lg border border-gray-200">
-                          {request.message}
-                        </p>
-                      )}
+                            {request.message && (
+                              <p className="text-sm text-gray-700 mb-4 p-3 bg-white rounded-lg border border-purple-200">
+                                {request.message}
+                              </p>
+                            )}
 
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => acceptJoinRequest(request._id)}
-                          className="flex-1 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
-                        >
-                          <Check className="w-4 h-4" />
-                          Accept
-                        </button>
-                        <button
-                          onClick={() => rejectJoinRequest(request._id)}
-                          className="flex-1 px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => acceptCollaborationRequest(request._id)}
+                                className="flex-1 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+                              >
+                                <Check className="w-4 h-4" />
+                                Accept
+                              </button>
+                              <button
+                                onClick={() => rejectCollaborationRequest(request._id)}
+                                className="flex-1 px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
+                              >
+                                <XCircle className="w-4 h-4" />
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Join Requests Section */}
+                  {joinRequests.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                        <UserPlus className="w-5 h-5 text-blue-600" />
+                        Join Requests ({joinRequests.length})
+                      </h3>
+                      <div className="space-y-3">
+                        {joinRequests.map((request) => (
+                          <div
+                            key={request._id}
+                            className="p-4 bg-gray-50 rounded-xl border border-gray-200"
+                          >
+                            <div className="flex items-start justify-between mb-3">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-full flex items-center justify-center text-white font-bold">
+                                  {request.requester?.name?.[0] || "?"}
+                                </div>
+                                <div>
+                                  <p className="font-semibold text-gray-900">{request.requester?.name}</p>
+                                  <p className="text-sm text-gray-600">{request.requester?.email}</p>
+                                </div>
+                              </div>
+                              <span className="text-xs text-gray-500">
+                                {new Date(request.createdAt).toLocaleDateString()}
+                              </span>
+                            </div>
+
+                            {request.message && (
+                              <p className="text-sm text-gray-700 mb-4 p-3 bg-white rounded-lg border border-gray-200">
+                                {request.message}
+                              </p>
+                            )}
+
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => acceptJoinRequest(request._id)}
+                                className="flex-1 px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+                              >
+                                <Check className="w-4 h-4" />
+                                Accept
+                              </button>
+                              <button
+                                onClick={() => rejectJoinRequest(request._id)}
+                                className="flex-1 px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center justify-center gap-2"
+                              >
+                                <XCircle className="w-4 h-4" />
+                                Reject
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

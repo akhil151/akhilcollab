@@ -40,14 +40,8 @@ export default function Messages() {
     // Listen for message updates (status changes)
     onEvent("message:updated", (data) => {
       console.log("Message updated:", data)
-      // Remove the message from list or update its status
-      setMessages(prevMessages => 
-        prevMessages.filter(msg => 
-          msg.metadata?.invitationId !== data.messageId &&
-          msg.metadata?.joinRequestId !== data.messageId &&
-          msg.metadata?.collaborationRequestId !== data.messageId
-        )
-      )
+      // Refetch messages to get the updated status
+      fetchMessages()
     })
   }, [user])
 
@@ -148,10 +142,9 @@ export default function Messages() {
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Invitation accepted! You can now access the board.")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to accept invitation:", error)
       alert(error.response?.data?.message || "Failed to accept invitation")
@@ -160,16 +153,16 @@ export default function Messages() {
 
   const rejectInvitation = async (messageId, invitationId) => {
     try {
+      const token = localStorage.getItem("token")
       const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/invitations/${invitationId}/reject`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Invitation rejected")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to reject invitation:", error)
       alert(error.response?.data?.message || "Failed to reject invitation")
@@ -178,16 +171,16 @@ export default function Messages() {
 
   const acceptCollaborationRequest = async (messageId, requestId) => {
     try {
+      const token = localStorage.getItem("token")
       const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/accept`,
         {},
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Collaboration request accepted!")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to accept collaboration request:", error)
       alert(error.response?.data?.message || "Failed to accept request")
@@ -198,16 +191,16 @@ export default function Messages() {
     const reason = prompt("Reason for rejection (optional):")
     
     try {
+      const token = localStorage.getItem("token")
       const response = await axios.put(
         `${import.meta.env.VITE_API_URL}/api/collaboration-requests/${requestId}/reject`,
         { reason },
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Collaboration request rejected")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to reject collaboration request:", error)
       alert(error.response?.data?.message || "Failed to reject request")
@@ -223,10 +216,9 @@ export default function Messages() {
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Join request accepted!")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to accept join request:", error)
       alert(error.response?.data?.message || "Failed to accept request")
@@ -244,10 +236,9 @@ export default function Messages() {
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
-      // Immediately remove message from UI
-      setMessages(prevMessages => prevMessages.filter(msg => msg._id !== messageId))
-      
+      // Socket event will trigger message refetch to show updated status
       alert("Join request rejected")
+      fetchMessages()
     } catch (error) {
       console.error("Failed to reject join request:", error)
       alert(error.response?.data?.message || "Failed to reject request")
@@ -445,81 +436,129 @@ export default function Messages() {
                       </p>
                     )}
 
-                    {/* Action Buttons for Invitations */}
+                    {/* Status Display or Action Buttons for Invitations */}
                     {message.type === "invitation" && message.metadata?.invitationId && (
-                      <div className="flex gap-2 mt-4">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            acceptInvitation(message._id, message.metadata.invitationId)
-                          }}
-                          className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Accept
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            rejectInvitation(message._id, message.metadata.invitationId)
-                          }}
-                          className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
+                      <div className="mt-4">
+                        {message.status === "pending" ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                acceptInvitation(message._id, message.metadata.invitationId)
+                              }}
+                              className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              Accept
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                rejectInvitation(message._id, message.metadata.invitationId)
+                              }}
+                              className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                            >
+                              <XCircle className="w-4 h-4" />
+                              Reject
+                            </button>
+                          </div>
+                        ) : message.status === "accepted" ? (
+                          <div className="px-4 py-2 bg-green-100 text-green-800 font-semibold rounded-lg flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4" />
+                            Accepted
+                          </div>
+                        ) : message.status === "rejected" ? (
+                          <div className="px-4 py-2 bg-red-100 text-red-800 font-semibold rounded-lg flex items-center gap-2">
+                            <XCircle className="w-4 h-4" />
+                            Rejected
+                          </div>
+                        ) : null}
                       </div>
                     )}
 
-                    {/* Action Buttons for Collaboration Requests */}
+                    {/* Status Display or Action Buttons for Collaboration Requests */}
                     {message.type === "collaboration_request" && message.metadata?.collaborationRequestId && (
-                      <div className="flex gap-2 mt-4">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            acceptCollaborationRequest(message._id, message.metadata.collaborationRequestId)
-                          }}
-                          className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Accept
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            rejectCollaborationRequest(message._id, message.metadata.collaborationRequestId)
-                          }}
-                          className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
+                      <div className="mt-4">
+                        {message.status === "pending" ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                acceptCollaborationRequest(message._id, message.metadata.collaborationRequestId)
+                              }}
+                              className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              Accept
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                rejectCollaborationRequest(message._id, message.metadata.collaborationRequestId)
+                              }}
+                              className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                            >
+                              <XCircle className="w-4 h-4" />
+                              Reject
+                            </button>
+                          </div>
+                        ) : message.status === "accepted" ? (
+                          <div className="px-4 py-2 bg-green-100 text-green-800 font-semibold rounded-lg flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4" />
+                            Accepted
+                          </div>
+                        ) : message.status === "rejected" ? (
+                          <div className="px-4 py-2 bg-red-100 text-red-800 font-semibold rounded-lg flex items-center gap-2">
+                            <XCircle className="w-4 h-4" />
+                            Rejected
+                            {message.metadata?.reason && (
+                              <span className="text-sm">({message.metadata.reason})</span>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     )}
 
-                    {/* Action Buttons for Join Requests */}
+                    {/* Status Display or Action Buttons for Join Requests */}
                     {message.type === "join_request" && message.metadata?.joinRequestId && (
-                      <div className="flex gap-2 mt-4">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            acceptJoinRequest(message._id, message.metadata.joinRequestId)
-                          }}
-                          className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Accept
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            rejectJoinRequest(message._id, message.metadata.joinRequestId)
-                          }}
-                          className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
-                        >
-                          <XCircle className="w-4 h-4" />
-                          Reject
-                        </button>
+                      <div className="mt-4">
+                        {message.status === "pending" ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                acceptJoinRequest(message._id, message.metadata.joinRequestId)
+                              }}
+                              className="px-4 py-2 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              Accept
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                rejectJoinRequest(message._id, message.metadata.joinRequestId)
+                              }}
+                              className="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2"
+                            >
+                              <XCircle className="w-4 h-4" />
+                              Reject
+                            </button>
+                          </div>
+                        ) : message.status === "accepted" ? (
+                          <div className="px-4 py-2 bg-green-100 text-green-800 font-semibold rounded-lg flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4" />
+                            Accepted
+                          </div>
+                        ) : message.status === "rejected" ? (
+                          <div className="px-4 py-2 bg-red-100 text-red-800 font-semibold rounded-lg flex items-center gap-2">
+                            <XCircle className="w-4 h-4" />
+                            Rejected
+                            {message.metadata?.reason && (
+                              <span className="text-sm">({message.metadata.reason})</span>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     )}
                   </div>

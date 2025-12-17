@@ -133,6 +133,36 @@ export const getSentCollaborationRequests = async (req, res) => {
   }
 }
 
+// Get collaboration requests for a specific board
+export const getCollaborationRequestsByBoard = async (req, res) => {
+  try {
+    const { boardId } = req.params
+    const userId = req.userId
+
+    const board = await Board.findById(boardId)
+    if (!board) {
+      return res.status(404).json({ message: "Board not found" })
+    }
+
+    // Only board owner can view collaboration requests
+    if (board.owner.toString() !== userId) {
+      return res.status(403).json({ message: "Only board owner can view collaboration requests" })
+    }
+
+    const requests = await CollaborationRequest.find({
+      board: boardId,
+      status: "pending",
+    })
+      .populate("requester", "name email role")
+      .sort({ createdAt: -1 })
+
+    res.json(requests)
+  } catch (error) {
+    console.error("Get board collaboration requests error:", error)
+    res.status(500).json({ message: "Failed to fetch collaboration requests", error: error.message })
+  }
+}
+
 // Accept collaboration request
 export const acceptCollaborationRequest = async (req, res) => {
   try {
@@ -208,29 +238,23 @@ export const acceptCollaborationRequest = async (req, res) => {
       type: 'collaboration_request'
     })
 
+    // Emit request:updated event to board participants
+    io.to(`board-${board._id}`).emit("request:updated", {
+      requestId,
+      type: 'collaboration_request',
+      status: 'accepted'
+    })
+
     // Notify user's dashboard about new board
     io.to(`user-${collaborationRequest.requester._id}`).emit("board:joined", {
       board: { _id: board._id, name: board.title, description: board.description }
     })
 
-    // Notify requester
-    const acceptMessage = new Message({
-      recipient: collaborationRequest.requester._id,
-      sender: userId,
-      board: board._id,
-      type: "collaboration_accepted",
-      content: `Your collaboration request for "${board.title}" was accepted`,
-      metadata: {
-        boardName: board.title,
-        action: "accepted",
-      },
-    })
-
-    await acceptMessage.save()
-
-    // Notify requester about new message
-    io.to(`user-${collaborationRequest.requester._id}`).emit("message:received", {
-      message: acceptMessage
+    // Notify requester that collaboration was accepted via socket event
+    io.to(`user-${collaborationRequest.requester._id}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'accepted',
+      type: 'collaboration_request'
     })
 
     // Send email notification
@@ -277,33 +301,38 @@ export const rejectCollaborationRequest = async (req, res) => {
     collaborationRequest.status = "rejected"
     await collaborationRequest.save()
 
-    // Notify requester
-    const rejectMessage = new Message({
-      recipient: collaborationRequest.requester._id,
-      sender: userId,
-      board: board._id,
-      type: "collaboration_rejected",
-      content: `Your collaboration request for "${board.title}" was rejected${reason ? `: ${reason}` : ""}`,
-      metadata: {
-        boardName: board.title,
-        action: "rejected",
-        reason: reason || "",
-      },
-    })
-
-    await rejectMessage.save()
-
-    // Update original collaboration request message status
+    // Update original collaboration request message status (DO NOT CREATE NEW MESSAGE)
     await Message.updateOne(
       { 'metadata.collaborationRequestId': requestId },
-      { $set: { status: 'rejected' } }
+      { 
+        $set: { 
+          status: 'rejected',
+          'metadata.respondedAt': new Date(),
+          'metadata.respondedBy': userId,
+          'metadata.reason': reason || ''
+        } 
+      }
     )
 
-    // Emit socket event for message update
+    // Emit socket event for message update to board owner (who rejected)
     io.to(`user-${userId}`).emit("message:updated", {
       messageId: requestId,
       status: 'rejected',
       type: 'collaboration_request'
+    })
+
+    // Notify requester that collaboration was rejected
+    io.to(`user-${collaborationRequest.requester._id}`).emit("message:updated", {
+      messageId: requestId,
+      status: 'rejected',
+      type: 'collaboration_request'
+    })
+
+    // Emit request:updated event to board participants
+    io.to(`board-${board._id}`).emit("request:updated", {
+      requestId,
+      type: 'collaboration_request',
+      status: 'rejected'
     })
 
     // Send email notification
