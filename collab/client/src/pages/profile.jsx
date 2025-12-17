@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { useUserStore } from "../store/userStore"
 import { ArrowLeft, Mail, Calendar, Zap } from "lucide-react"
 import axios from "axios"
-import io from "socket.io-client"
+import { connectSocket, getSocket } from "../utils/socket"
 
 export default function Profile() {
   const navigate = useNavigate()
@@ -26,32 +26,28 @@ export default function Profile() {
     fetchStats()
 
     // Setup WebSocket connection for real-time updates
-    const socketUrl = import.meta.env.VITE_API_URL
-    const newSocket = io(socketUrl, {
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5,
-      transports: ['websocket', 'polling']
-    })
+    const sharedSocket = connectSocket(import.meta.env.VITE_API_URL)
+    
+    if (sharedSocket) {
+      // Join the user room
+      if (sharedSocket.connected) {
+        sharedSocket.emit("join-user", user.id || user._id)
+      } else {
+        sharedSocket.on("connect", () => {
+          sharedSocket.emit("join-user", user.id || user._id)
+        })
+      }
 
-    newSocket.on("connect", () => {
-      newSocket.emit("join-user", user.id || user._id)
-    })
+      // Listen for board/list/card changes to update stats
+      sharedSocket.on("board:created", fetchStats)
+      sharedSocket.on("board:deleted", fetchStats)
+      sharedSocket.on("list:created", fetchStats)
+      sharedSocket.on("list:deleted", fetchStats)
+      sharedSocket.on("card:created", fetchStats)
+      sharedSocket.on("card:deleted", fetchStats)
 
-    newSocket.on("connect_error", (error) => {
-      console.warn("Socket connection error (non-critical):", error.message)
-    })
-
-    // Listen for board/list/card changes to update stats
-    newSocket.on("board:created", fetchStats)
-    newSocket.on("board:deleted", fetchStats)
-    newSocket.on("list:created", fetchStats)
-    newSocket.on("list:deleted", fetchStats)
-    newSocket.on("card:created", fetchStats)
-    newSocket.on("card:deleted", fetchStats)
-
-    setSocket(newSocket)
+      setSocket(sharedSocket)
+    }
 
     // Fallback polling every 15 seconds
     const interval = setInterval(fetchStats, 15000)

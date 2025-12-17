@@ -6,7 +6,7 @@ import {
   Bold, Italic, Underline, Upload, AlertCircle
 } from "lucide-react"
 import axios from "axios"
-import io from "socket.io-client"
+import { connectSocket, getSocket, emitEvent, onEvent } from "../utils/socket"
 
 // Debounce utility
 const debounce = (func, wait) => {
@@ -94,19 +94,23 @@ export default function CardWorkspace() {
   }, [cardId, user])
 
   const setupSocket = () => {
-    const socketUrl = import.meta.env.VITE_API_URL
-    const newSocket = io(socketUrl, {
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-      transports: ["websocket", "polling"],
-    })
+    const sharedSocket = connectSocket(import.meta.env.VITE_API_URL)
+    
+    if (!sharedSocket) {
+      console.error('Failed to connect socket in CardWorkspace')
+      return
+    }
 
-    newSocket.on("connect", () => {
-      newSocket.emit("join-card", cardId)
-    })
+    // Join the card room
+    if (sharedSocket.connected) {
+      sharedSocket.emit("join-card", cardId)
+    } else {
+      sharedSocket.on("connect", () => {
+        sharedSocket.emit("join-card", cardId)
+      })
+    }
 
-    newSocket.on("workspace:update", (data) => {
+    sharedSocket.on("workspace:update", (data) => {
       if (data.elements) {
         // Restore image URLs from localStorage
         const restoredElements = data.elements.map(el => {
@@ -121,7 +125,7 @@ export default function CardWorkspace() {
       if (data.connectors) setConnectors(data.connectors)
     })
 
-    newSocket.on("element:added", (element) => {
+    sharedSocket.on("element:added", (element) => {
       setElements((prev) => {
         const filtered = prev.filter(el => el.id !== element.id)
         // Restore image from localStorage if needed
@@ -133,7 +137,7 @@ export default function CardWorkspace() {
       })
     })
 
-    newSocket.on("element:updated", (updatedElement) => {
+    sharedSocket.on("element:updated", (updatedElement) => {
       setElements((prev) => prev.map((el) => {
         if (el.id === updatedElement.id) {
           // Restore image from localStorage if needed
@@ -147,19 +151,19 @@ export default function CardWorkspace() {
       }))
     })
 
-    newSocket.on("element:deleted", ({ elementId }) => {
+    sharedSocket.on("element:deleted", ({ elementId }) => {
       setElements((prev) => prev.filter((el) => el.id !== elementId))
     })
 
-    newSocket.on("connector:added", (connector) => {
+    sharedSocket.on("connector:added", (connector) => {
       setConnectors((prev) => [...prev.filter(c => c.id !== connector.id), connector])
     })
 
-    newSocket.on("connector:deleted", ({ connectorId }) => {
+    sharedSocket.on("connector:deleted", ({ connectorId }) => {
       setConnectors((prev) => prev.filter((c) => c.id !== connectorId))
     })
 
-    setSocket(newSocket)
+    setSocket(sharedSocket)
   }
 
   const fetchCard = async () => {
