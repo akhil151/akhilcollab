@@ -90,6 +90,27 @@ app.get("/", (req, res) => {
   res.send("Collaboration Board Server Running")
 })
 
+// Health check endpoint with DB status
+app.get("/api/health", (req, res) => {
+  const dbStatus = mongoose.connection.readyState
+  const statusMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting'
+  }
+  
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: {
+      status: statusMap[dbStatus] || 'unknown',
+      connected: dbStatus === 1
+    },
+    server: 'running'
+  })
+})
+
 // Socket.io Events
 import { handleSocketConnection } from "./sockets/socketHandler.js"
 io.on("connection", (socket) => {
