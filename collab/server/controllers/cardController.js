@@ -29,11 +29,12 @@ export const createCard = async (req, res) => {
 
 export const updateCard = async (req, res) => {
   try {
-    const { title, description, dueDate, labels, elements, connectors } = req.body
+    const { title, description, dueDate, labels, elements, connectors, drawings } = req.body
     
     // Validate and clean workspace data
     let cleanedElements = elements
     let cleanedConnectors = connectors
+    let cleanedDrawings = drawings
     
     if (elements) {
       cleanedElements = elements.map(el => {
@@ -50,6 +51,7 @@ export const updateCard = async (req, res) => {
     const updateData = { title, description, dueDate, labels }
     if (cleanedElements !== undefined) updateData.elements = cleanedElements
     if (cleanedConnectors !== undefined) updateData.connectors = cleanedConnectors
+    if (cleanedDrawings !== undefined) updateData.drawings = cleanedDrawings
     
     const card = await Card.findByIdAndUpdate(
       req.params.id,

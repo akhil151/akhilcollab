@@ -41,6 +41,10 @@ const cardSchema = new mongoose.Schema(
       type: Array,
       default: [],
     },
+    drawings: {
+      type: Array,
+      default: [],
+    },
     createdAt: {
       type: Date,
       default: Date.now,

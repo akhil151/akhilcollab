@@ -3,7 +3,7 @@ import { useParams, useNavigate } from "react-router-dom"
 import { useUserStore } from "../store/userStore"
 import { 
   ArrowLeft, Type, Shapes, ImageIcon, Link2, Trash2, Save, 
-  Bold, Italic, Underline, Upload, AlertCircle
+  Bold, Italic, Underline, Upload, AlertCircle, Pencil, Eraser
 } from "lucide-react"
 import axios from "axios"
 import { connectSocket, getSocket, emitEvent, onEvent } from "../utils/socket"
@@ -14,6 +14,18 @@ const debounce = (func, wait) => {
   return (...args) => {
     clearTimeout(timeout)
     timeout = setTimeout(() => func(...args), wait)
+  }
+}
+
+// Throttle utility for drawing
+const throttle = (func, wait) => {
+  let lastTime = 0
+  return (...args) => {
+    const now = Date.now()
+    if (now - lastTime >= wait) {
+      lastTime = now
+      func(...args)
+    }
   }
 }
 
@@ -74,6 +86,14 @@ export default function CardWorkspace() {
     width: 2
   })
 
+  // Drawing tool
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [currentStroke, setCurrentStroke] = useState([])
+  const [drawings, setDrawings] = useState([])
+  const [drawingColor, setDrawingColor] = useState("#8b5cf6")
+  const [drawingWidth, setDrawingWidth] = useState(3)
+  const [eraserMode, setEraserMode] = useState(false)
+
   // Canvas bounds
   const CANVAS_WIDTH = 1600
   const CANVAS_HEIGHT = 1200
@@ -123,6 +143,7 @@ export default function CardWorkspace() {
         setElements(restoredElements)
       }
       if (data.connectors) setConnectors(data.connectors)
+      if (data.drawings) setDrawings(data.drawings)
     })
 
     sharedSocket.on("element:added", (element) => {
@@ -163,6 +184,18 @@ export default function CardWorkspace() {
       setConnectors((prev) => prev.filter((c) => c.id !== connectorId))
     })
 
+    sharedSocket.on("drawing:added", (drawing) => {
+      setDrawings((prev) => [...prev, drawing])
+    })
+
+    sharedSocket.on("drawing:batch", (strokes) => {
+      setDrawings((prev) => [...prev, ...strokes])
+    })
+
+    sharedSocket.on("drawing:erased", (data) => {
+      setDrawings((prev) => prev.filter((d) => d.id !== data.drawingId))
+    })
+
     setSocket(sharedSocket)
   }
 
@@ -188,6 +221,8 @@ export default function CardWorkspace() {
       
       if (response.data.connectors) setConnectors(response.data.connectors)
       
+      if (response.data.drawings) setDrawings(response.data.drawings)
+      
       setLoading(false)
       setError(null)
     } catch (error) {
@@ -201,7 +236,7 @@ export default function CardWorkspace() {
 
   // Debounced autosave with clean data
   const debouncedSave = useCallback(
-    debounce(async (elementsToSave, connectorsToSave) => {
+    debounce(async (elementsToSave, connectorsToSave, drawingsToSave) => {
       if (error) return // Don't autosave if card failed to load
       
       try {
@@ -210,7 +245,7 @@ export default function CardWorkspace() {
         
         await axios.put(
           `${import.meta.env.VITE_API_URL}/api/cards/${cardId}`,
-          { elements: cleanedElements, connectors: connectorsToSave },
+          { elements: cleanedElements, connectors: connectorsToSave, drawings: drawingsToSave },
           { headers: { Authorization: `Bearer ${token}` } }
         )
       } catch (error) {
@@ -224,10 +259,10 @@ export default function CardWorkspace() {
   )
 
   useEffect(() => {
-    if (!error && (elements.length > 0 || connectors.length > 0)) {
-      debouncedSave(elements, connectors)
+    if (!error && (elements.length > 0 || connectors.length > 0 || drawings.length > 0)) {
+      debouncedSave(elements, connectors, drawings)
     }
-  }, [elements, connectors, debouncedSave, error])
+  }, [elements, connectors, drawings, debouncedSave, error])
 
   const saveWorkspace = async () => {
     if (error) {
@@ -241,12 +276,12 @@ export default function CardWorkspace() {
       
       await axios.put(
         `${import.meta.env.VITE_API_URL}/api/cards/${cardId}`,
-        { elements: cleanedElements, connectors },
+        { elements: cleanedElements, connectors, drawings },
         { headers: { Authorization: `Bearer ${token}` } }
       )
       
       if (socket) {
-        socket.emit("workspace:save", { cardId, elements: cleanedElements, connectors })
+        socket.emit("workspace:save", { cardId, elements: cleanedElements, connectors, drawings })
       }
       
       alert("Workspace saved successfully!")
@@ -537,6 +572,68 @@ export default function CardWorkspace() {
     if (socket) socket.emit("connector:delete", { cardId, connectorId })
   }
 
+  // ===== DRAWING FUNCTIONS =====
+  
+  const startDrawing = (x, y) => {
+    if (activeTool !== "draw" || !socket?.connected) return
+    setIsDrawing(true)
+    setCurrentStroke([{ x, y }])
+  }
+
+  const continueDrawing = throttle((x, y) => {
+    if (!isDrawing || activeTool !== "draw") return
+    setCurrentStroke(prev => [...prev, { x, y }])
+  }, 16) // ~60fps
+
+  const endDrawing = () => {
+    if (!isDrawing || currentStroke.length < 2) {
+      setIsDrawing(false)
+      setCurrentStroke([])
+      return
+    }
+
+    const newDrawing = {
+      id: Date.now() + Math.random(),
+      points: currentStroke,
+      color: eraserMode ? "#1e293b" : drawingColor,
+      width: eraserMode ? drawingWidth * 3 : drawingWidth,
+      timestamp: Date.now()
+    }
+
+    setDrawings(prev => [...prev, newDrawing])
+    
+    if (socket?.connected) {
+      socket.emit("drawing:add", { cardId, drawing: newDrawing })
+    }
+
+    setIsDrawing(false)
+    setCurrentStroke([])
+  }
+
+  const eraseDrawing = (x, y) => {
+    if (!eraserMode || activeTool !== "draw") return
+    
+    // Find drawings near the click point
+    const eraseRadius = drawingWidth * 3
+    const toErase = drawings.filter(drawing => {
+      return drawing.points.some(point => {
+        const dist = Math.sqrt(Math.pow(point.x - x, 2) + Math.pow(point.y - y, 2))
+        return dist < eraseRadius
+      })
+    })
+
+    if (toErase.length > 0) {
+      const eraseIds = toErase.map(d => d.id)
+      setDrawings(prev => prev.filter(d => !eraseIds.includes(d.id)))
+      
+      if (socket?.connected) {
+        eraseIds.forEach(drawingId => {
+          socket.emit("drawing:erase", { cardId, drawingId })
+        })
+      }
+    }
+  }
+
   // ===== MOUSE HANDLERS =====
   
   const getMousePosition = (e) => {
@@ -555,6 +652,12 @@ export default function CardWorkspace() {
     
     if (activeTool === "text") {
       handleAddText(x, y)
+    } else if (activeTool === "draw") {
+      if (eraserMode) {
+        eraseDrawing(x, y)
+      } else {
+        startDrawing(x, y)
+      }
     } else {
       setSelectedElement(null)
       setEditingTextId(null)
@@ -598,9 +701,16 @@ export default function CardWorkspace() {
   }
 
   const handleMouseMove = (e) => {
+    const { x, y } = getMousePosition(e)
+    
+    // Handle drawing
+    if (isDrawing && activeTool === "draw") {
+      continueDrawing(x, y)
+      return
+    }
+    
     if (!isDragging && !isResizing) return
     
-    const { x, y } = getMousePosition(e)
     const deltaX = x - dragStart.x
     const deltaY = y - dragStart.y
     
@@ -637,6 +747,12 @@ export default function CardWorkspace() {
   }
 
   const handleMouseUp = () => {
+    // Handle drawing end
+    if (isDrawing && activeTool === "draw") {
+      endDrawing()
+      return
+    }
+    
     if ((isDragging || isResizing) && selectedElement && socket) {
       socket.emit("element:update", { cardId, element: selectedElement })
     }
@@ -935,6 +1051,19 @@ export default function CardWorkspace() {
     return handles.map(handle => (
       <div
         key={`handle-${handle.id}`}
+        onMouseDown={(e) => {
+          e.stopPropagation()
+          const { x, y } = getMousePosition(e)
+          setIsResizing(true)
+          setResizeHandle(handle.id)
+          setElementStart({
+            x: selectedElement.position.x,
+            y: selectedElement.position.y,
+            width: selectedElement.size.width,
+            height: selectedElement.size.height
+          })
+          setDragStart({ x, y })
+        }}
         style={{
           position: 'absolute',
           left: handle.x - 6,
@@ -950,6 +1079,54 @@ export default function CardWorkspace() {
         }}
       />
     ))
+  }
+
+  const renderDrawings = () => {
+    return drawings.map((drawing) => {
+      if (!drawing.points || drawing.points.length < 2) return null
+      
+      const pathData = drawing.points.reduce((acc, point, index) => {
+        if (index === 0) {
+          return `M ${point.x} ${point.y}`
+        }
+        return `${acc} L ${point.x} ${point.y}`
+      }, '')
+
+      return (
+        <path
+          key={drawing.id}
+          d={pathData}
+          stroke={drawing.color}
+          strokeWidth={drawing.width}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          fill="none"
+        />
+      )
+    })
+  }
+
+  const renderCurrentStroke = () => {
+    if (!isDrawing || currentStroke.length < 2) return null
+    
+    const pathData = currentStroke.reduce((acc, point, index) => {
+      if (index === 0) {
+        return `M ${point.x} ${point.y}`
+      }
+      return `${acc} L ${point.x} ${point.y}`
+    }, '')
+
+    return (
+      <path
+        d={pathData}
+        stroke={eraserMode ? "#1e293b" : drawingColor}
+        strokeWidth={eraserMode ? drawingWidth * 3 : drawingWidth}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+        opacity="0.8"
+      />
+    )
   }
 
   // Error state
@@ -1055,6 +1232,31 @@ export default function CardWorkspace() {
             Connect
           </button>
 
+          <button
+            onClick={() => {
+              setActiveTool(activeTool === "draw" ? null : "draw")
+              setEraserMode(false)
+            }}
+            className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 ${
+              activeTool === "draw" && !eraserMode ? "bg-violet-600" : "bg-slate-700 hover:bg-slate-600"
+            }`}
+          >
+            <Pencil size={20} />
+            Draw
+          </button>
+
+          {activeTool === "draw" && (
+            <button
+              onClick={() => setEraserMode(!eraserMode)}
+              className={`px-3 py-2 rounded-lg transition-colors flex items-center gap-2 ${
+                eraserMode ? "bg-violet-600" : "bg-slate-700 hover:bg-slate-600"
+              }`}
+            >
+              <Eraser size={20} />
+              Eraser
+            </button>
+          )}
+
           <div className="w-px h-8 bg-slate-600"></div>
 
           {/* Text Formatting Toolbar */}
@@ -1115,6 +1317,39 @@ export default function CardWorkspace() {
                 className="w-10 h-10 rounded cursor-pointer bg-slate-700"
                 title="Text color"
               />
+
+              <div className="w-px h-8 bg-slate-600"></div>
+            </>
+          )}
+
+          {/* Drawing Tool Controls */}
+          {activeTool === "draw" && !eraserMode && (
+            <>
+              <input
+                type="color"
+                value={drawingColor}
+                onChange={(e) => setDrawingColor(e.target.value)}
+                className="w-10 h-10 rounded cursor-pointer bg-slate-700"
+                title="Drawing color"
+              />
+
+              <div className="flex items-center gap-1 bg-slate-700 rounded-lg px-2">
+                <button
+                  onClick={() => setDrawingWidth(Math.max(1, drawingWidth - 1))}
+                  className="px-2 py-1 hover:bg-slate-600 rounded"
+                  title="Decrease stroke width"
+                >
+                  -
+                </button>
+                <span className="text-sm px-2 min-w-[3ch] text-center">{drawingWidth}</span>
+                <button
+                  onClick={() => setDrawingWidth(Math.min(20, drawingWidth + 1))}
+                  className="px-2 py-1 hover:bg-slate-600 rounded"
+                  title="Increase stroke width"
+                >
+                  +
+                </button>
+              </div>
 
               <div className="w-px h-8 bg-slate-600"></div>
             </>
@@ -1201,7 +1436,7 @@ export default function CardWorkspace() {
           style={{
             width: CANVAS_WIDTH,
             height: CANVAS_HEIGHT,
-            cursor: activeTool === "text" ? "crosshair" : "default",
+            cursor: activeTool === "text" ? "crosshair" : activeTool === "draw" ? "crosshair" : "default",
           }}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleMouseMove}
@@ -1227,6 +1462,8 @@ export default function CardWorkspace() {
             </defs>
             <rect width={CANVAS_WIDTH} height={CANVAS_HEIGHT} fill="url(#grid)" />
             {renderConnectors()}
+            {renderDrawings()}
+            {renderCurrentStroke()}
           </svg>
 
           {/* Elements */}

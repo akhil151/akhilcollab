@@ -102,7 +102,8 @@ export const handleSocketConnection = (socket, io) => {
   socket.on("workspace:save", (data) => {
     socket.to(`card-${data.cardId}`).emit("workspace:update", {
       elements: data.elements,
-      connectors: data.connectors
+      connectors: data.connectors,
+      drawings: data.drawings
     })
   })
 
@@ -127,6 +128,21 @@ export const handleSocketConnection = (socket, io) => {
   socket.on("connector:delete", (data) => {
     socket.to(`card-${data.cardId}`).emit("connector:deleted", {
       connectorId: data.connectorId
+    })
+  })
+
+  // Drawing events
+  socket.on("drawing:add", (data) => {
+    socket.to(`card-${data.cardId}`).emit("drawing:added", data.drawing)
+  })
+
+  socket.on("drawing:batch", (data) => {
+    socket.to(`card-${data.cardId}`).emit("drawing:batch", data.strokes)
+  })
+
+  socket.on("drawing:erase", (data) => {
+    socket.to(`card-${data.cardId}`).emit("drawing:erased", {
+      drawingId: data.drawingId
     })
   })
 
